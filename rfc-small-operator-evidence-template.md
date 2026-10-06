@@ -35,12 +35,16 @@ Each slot listed in the manifest carries one state.
 
 The same states apply to a single field inside a record, written as an object with `state` and `reason`.
 
+An `artifacts[]` entry whose state is not `present` carries exactly `slot`, `state` and `reason`. It omits `name`, `media_type`, `canonicalization`, `digest_alg` and `digest`, because there are no bytes in the bundle for them to describe. This holds for `withheld` too. The digest of a withheld record stays in the original manifest under the operator's custody, and the shared bundle does not repeat it: a digest of bytes the receiver cannot see checks nothing, and it can link this bundle to other reports.
+
+A bundle is complete when every required slot is `present` or `not_applicable`. A slot in any other state makes the bundle incomplete, whatever its reason says. Complete describes coverage only. An incomplete bundle is still well formed, and its claims resolve as the tables below say.
+
 Each claim stated in the manifest resolves to one result.
 
 | Result | Meaning |
 | --- | --- |
 | `supported` | Every record the claim relies on is `present`, matches its digest, names the same action and passes the claim's checks |
-| `not_supported` | A record the claim relies on is `present` and fails a check: a digest mismatch, a different action, a `deny` decision, or times out of order |
+| `not_supported` | A record the claim relies on is `present` and fails a check: a digest mismatch, a different action, a `deny` decision, or times out of order; or the declared action its records name fails the step 4 digest check |
 | `unknown` | A record the claim relies on is in any state other than `present`, or its slot is missing from the manifest |
 
 A transfer resolves separately to `accepted`, `rejected`, `sent_not_acknowledged` or `unknown`. See the transfer acknowledgment below.
@@ -59,7 +63,7 @@ The example declares one action. With several, the three action slots repeat per
 | `tier`: `operator_size`, `declared_consequence`, `deployment_context` | The context the operator used to scale its own effort | That the declaration is accurate |
 | `retention`, `disclosure` | The operator's stated retention period and intended audience | That the operator keeps to them |
 | `actions[]`: `id`, the action object, its digest | The one action that the authorization, decision and effect records must all name | That the agent took no other action |
-| `artifacts[]`: `slot`, `name`, `media_type`, `canonicalization`, `digest_alg`, `digest`, `state`, `reason` | Exactly which bytes each record had when the operator signed, and which slots are empty and why | That any record is accurate, or that the operator captured everything relevant |
+| `artifacts[]`: `slot`, `state`, `reason`, and for a `present` slot `name`, `media_type`, `canonicalization`, `digest_alg`, `digest` | Exactly which bytes each record had when the operator signed, and which slots are empty and why | That any record is accurate, or that the operator captured everything relevant |
 | `claims[]`: `id`, `statement`, `relies_on` | What the operator asserts, and which records a receiver checks for each assertion | Anything outside those records; an unlisted claim has no support in the bundle |
 | `signature` | The holder of the signer key signed these exact manifest bytes | Independent observation, or the truth of any record |
 
@@ -120,9 +124,11 @@ A bundle shared in full lists this slot as `not_applicable` with the reason `no 
 | --- | --- | --- |
 | `input_ref`: a digest, or a state with reason | Which bundle this one came from, or why that link stays private | The content of the input |
 | `method`, `effect` (`lossless`, `lossy` or `redacting`) | How the bundle changed | That the method was applied as described, beyond what the output shows |
-| `removed[]`: slot, field, reason | Exactly which records or fields came out | What they contained |
+| `removed[]`: `slot`, `reason`, and `field` only when one field came out | Exactly which records or fields came out | What they contained |
 | `claims_still_verifiable[]`, `claims_no_longer_verifiable[]` | Which stated claims a receiver can still check from this bundle | That the removed material would have supported any claim |
 | `original_held_by` | Who keeps the original under private custody | That the original still exists |
+
+An entry that removes a whole record names `slot` and `reason` and carries no `field`. An entry that removes one field inside a record names `slot`, `field` and `reason`. The matching `artifacts[]` entry carries state `withheld`; its `reason` may repeat the receipt's text or say less.
 
 A shared bundle may withhold the original's digests where they would let a reader guess content or link reports. The receipt then says so in `input_ref`.
 
@@ -143,7 +149,7 @@ A sender log, a queue acknowledgment or an HTTP success status shows only that t
 
 1. Write the three tier lines: your size, the consequence you declare, and your deployment context. They scale your effort and never change what a state means.
 2. Declare each action you are reporting once in `actions[]`, and hash it.
-3. For each action, fill three records: what authorized it, what your gate decided, and what you observed afterward. If no gate sits in your action path, list `gate_decision` as `not_applicable` with that reason. If you did not log the result, list `observed_effect` as `not_collected`. Both are honest answers, and the claims that need those records resolve `unknown`.
+3. For each action, fill three records: what authorized it, what your gate decided, and what you observed afterward. If no gate sits in your action path, list `gate_decision` as `not_applicable` with that reason. If you did not log the result, list `observed_effect` as `not_collected`. Both are honest answers. The bundle is incomplete, and the claims that need those records resolve `unknown`.
 4. Fill the signer record once and reuse it: your public key, where you publish it, who and what can use the private key (say whether the agent itself can), and how a reader learns of a rotation or revocation.
 5. State only claims you can point to records for, and name those records in `relies_on`.
 6. Hash each record, list it in the manifest with its state, and sign the manifest. Any SHA-256 tool and any Ed25519 or comparable signing tool will do.
@@ -158,9 +164,9 @@ You do not need a security operations center, a hosted service, a vendor account
 Checks below use the canonicalization the manifest declares. The example declares RFC 8785 and SHA-256.
 
 1. **Attribution.** Verify `signature` over the canonical form of the manifest with the `signature` member removed, using the key in the signer record, and match that key against the operator's publication. Record `attributed` or `unattributed`.
-2. **Structure.** Confirm that every required slot is listed: `scope`, `authorization`, `gate_decision`, `observed_effect`, `signer` and `redaction_receipt`. An unlisted slot, a state other than `present` without a reason, or a derived bundle that reuses an earlier `bundle_id` is a structural error. Claims relying on an unlisted slot resolve `unknown`.
+2. **Structure.** Confirm that every required slot is listed: `scope`, `authorization`, `gate_decision`, `observed_effect`, `signer` and `redaction_receipt`. An unlisted slot, a state other than `present` without a reason, a non-`present` entry that carries `name`, `media_type`, `canonicalization`, `digest_alg` or `digest`, or a derived bundle that reuses an earlier `bundle_id` is a structural error. Claims relying on an unlisted slot resolve `unknown`.
 3. **Digests.** Recompute each `present` record's digest over its canonical bytes. A mismatch makes every claim relying on that slot `not_supported`.
-4. **Actions.** Recompute each declared action's digest from its action object.
+4. **Actions.** Recompute each declared action's digest from its action object. A mismatch makes every claim `not_supported` whose relied-on records name that action id, since those records are bound to an action the manifest misstates.
 5. **Claims.** Evaluate each claim against only the records in its `relies_on`, using its checks.
 6. **Receipt.** A claim listed in `claims_still_verifiable` that does not resolve `supported`, and that relies on a `withheld` slot, is a receipt inconsistency.
 7. **Transfer.** An acknowledgment counts only if its `signature` verifies with the receiver's key over the canonical form of the acknowledgment with the `signature` member removed, and its `manifest_digest` equals the digest of the canonical form of the whole manifest, signature included.
@@ -176,7 +182,7 @@ Each control starts from the synthetic example below, makes the stated change, a
 | N1. Missing authorization | Remove `authorization.json`. List the slot as `not_collected`, reason `gate log rotated before export`. | C1 `unknown`. C2 and C3 `supported`. | C1 resolves `supported`, or the bundle is reported complete. |
 | N2. Gate decision for a different action | In `gate_decision.json`, keep the id `A1` and set `action.digest` to the digest of the same request against ticket 4412, `bf4bb17923224e9cf23e4268afa5129cb35d930cb1b7d045716cab37bb92ef01`. Update the manifest's digest for that record. | C1 and C2 `not_supported`, for an action mismatch. C3 `supported`. | C1 or C2 resolves `supported` because an `allow` decision exists somewhere in the bundle. |
 | N3. No observed effect | Remove `observed_effect.json` and list it as `not_collected`, reason `agent exited before the response was logged`. With nothing redacted, list `redaction_receipt` as `not_applicable`, reason `no transformation`. | C3 `unknown`. C1 and C2 `supported`. | C3 resolves `supported`, or any output treats the `allow` decision as evidence that the action ran. |
-| N4. Redaction removes evidence a stated claim needs | Derive a new bundle with a new `bundle_id`. Remove `gate_decision.json`, list the slot as `withheld`, add it to the receipt's `removed[]`, and leave C1 and C2 in `claims_still_verifiable`. | C1 and C2 `unknown`. Receipt inconsistency reported for C1 and C2. C3 `supported`. | C1 or C2 resolves `supported`, the inconsistency goes unreported, or reusing the example's `bundle_id` raises no structural error. |
+| N4. Redaction removes evidence a stated claim needs | Derive a new bundle with `bundle_id` `bundle:operator.example/2026-10-04/0002-shared`, all other manifest fields unchanged. Remove `gate_decision.json` and list the slot as `withheld`, reason `withheld pending internal review`. Append `{"slot": "gate_decision", "reason": "withheld pending internal review"}` to the receipt's `removed[]`, leave C1 and C2 in `claims_still_verifiable`, and update the manifest's digest for the receipt. | C1 and C2 `unknown`. Receipt inconsistency reported for C1 and C2. C3 `supported`. | C1 or C2 resolves `supported`, the inconsistency goes unreported, or reusing the example's `bundle_id` raises no structural error. |
 | N5. Receiver never durably acknowledged | Bundle unchanged. The sender holds only its own log line, `HTTP 202 from intake.vendor.example`, and no `transfer_ack`. | Transfer `sent_not_acknowledged`. Claims unchanged. | The transfer reads `accepted` on the strength of the sender log or a transport status. |
 
 The ticket 4412 action object in N2 is `{"method": "POST", "target": "https://api.vendor.example/v1/tickets/4412/close", "project": "P-17"}`.
@@ -184,6 +190,7 @@ The ticket 4412 action object in N2 is `{"method": "POST", "target": "https://ap
 Variants worth running beside the five:
 
 * N1, with the `authorization` slot dropped from `artifacts[]` entirely: a structural error, and C1 resolves `unknown`.
+* N2, with the manifest's A1 action object changed to the ticket 4412 object and the declared digest left as is: a step 4 mismatch, and C1, C2 and C3 `not_supported`.
 * N3, with `observed_effect.json` kept and its `outcome` set to `no_effect_observed`: C3 resolves `not_supported`.
 * N5, with an acknowledgment whose `manifest_digest` names a different manifest: it counts as no acknowledgment.
 * Tier check: rerun N1 with `declared_consequence` set to `high`. No result may change.
